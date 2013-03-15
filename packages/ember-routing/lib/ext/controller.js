@@ -28,5 +28,15 @@ Ember.ControllerMixin.reopen({
   replaceWith: function() {
     Ember.deprecate("replaceWith is deprecated. Please use replaceRoute.");
     return this.replaceRoute.apply(this, arguments);
-  }
+  },
+
+  isLoaded: Ember.computed('content.isLoaded', '_waitingForPromise', function() {
+    if(this.get('_waitingForPromise')) {
+      return false;
+    } else {
+      return this.get('content.isLoaded') === false ? false : true;
+    }
+  }),
+
+  _waitingForPromise: false
 });

@@ -677,8 +677,14 @@ test("Nested callbacks are not exited when moving to siblings", function() {
     return menuItem;
   };
 
+  var isLoading;
   App.LoadingRoute = Ember.Route.extend({
-
+    activate: function() {
+      isLoading = true;
+    },
+    deactivate: function() {
+      isLoading = false;
+    }
   });
 
   App.RootRoute = Ember.Route.extend({
@@ -740,8 +746,12 @@ test("Nested callbacks are not exited when moving to siblings", function() {
   router = container.lookup('router:main');
 
   Ember.run(function() {
-    router.transitionTo('special', App.MenuItem.create({ id: 1 }));
+    var item = App.MenuItem.create({ id: 1 });
+    router.transitionTo('special', item);
+    ok(isLoading, "router is in loading state due to unresolved promise");
+    item.resolve();
   });
+  ok(!isLoading, "router is no longer in loading state after promise resolved");
   equal(rootSetup, 1, "The root setup was not triggered again");
   equal(rootRender, 1, "The root render was not triggered again");
   equal(rootSerialize, 0, "The root serialize was not called");
@@ -1552,3 +1562,57 @@ test("Generating a URL should not affect currentModel", function() {
 
   equal(route.modelFor('post'), posts[1]);
 });
+
+/*
+test("The Special Page returning a promise puts the app into a loading state until the promise is resolved", function() {
+  stop();
+
+  Router.map(function() {
+    this.route("home", { path: "/" });
+    this.resource("special", { path: "/specials/:menu_item_id" });
+  });
+
+  var menuItem;
+
+  App.MenuItem = Ember.Object.extend(Ember.DeferredMixin);
+  App.MenuItem.find = function(id) {
+    menuItem = App.MenuItem.create({ id: id });
+    return menuItem;
+  };
+
+  //App.LoadingRoute = Ember.Route.extend({ });
+
+  App.SpecialRoute = Ember.Route.extend({
+    setupController: function(controller, model) {
+      set(controller, 'content', model);
+    }
+  });
+
+  Ember.TEMPLATES.special = Ember.Handlebars.compile(
+    "<p>{{content.id}}</p>"
+  );
+
+  Ember.TEMPLATES.loading = Ember.Handlebars.compile(
+    "<p>LOADING!</p>"
+  );
+
+  bootApplication();
+
+  container.register('controller', 'special', Ember.Controller.extend());
+
+  Ember.run(function() {
+    router.handleURL("/specials/1");
+  });
+
+  equal(Ember.$('p', '#qunit-fixture').text(), "LOADING!", "The app is in the loading state");
+
+  Ember.run(function() {
+    menuItem.resolve(menuItem);
+  });
+
+  setTimeout(function() {
+    equal(Ember.$('p', '#qunit-fixture').text(), "1", "The app is now in the specials state");
+    start();
+  }, 100);
+});
+*/

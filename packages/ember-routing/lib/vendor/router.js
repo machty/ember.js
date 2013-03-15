@@ -12,19 +12,132 @@ define("router",
       * `{String} handler`: A handler name
       * `{Object} params`: A hash of recognized parameters
 
-      ## `UnresolvedHandlerInfo`
-
-      * `{Boolean} isDynamic`: whether a handler has any dynamic segments
-      * `{String} name`: the name of a handler
-      * `{Object} context`: the active context for the handler
-
       ## `HandlerInfo`
 
       * `{Boolean} isDynamic`: whether a handler has any dynamic segments
-      * `{String} name`: the original unresolved handler name
+      * `{String} name`: the name of a handler
       * `{Object} handler`: a handler object
       * `{Object} context`: the active context for the handler
     */
+
+
+    function Transition(router, handlerInfos, updateURLMethod) {
+      this.router = router;
+      this.handlerInfos = handlerInfos;
+      this.updateURLMethod = updateURLMethod;
+      this.numPromises = 0;
+      this.resolvedContexts = [];
+    }
+
+    Transition.prototype = {
+  
+      /**
+        Perform the transition.
+      */
+      start: function() { this._step(0); },
+
+      /**
+        @private
+
+        This updates the URL for `transitionTo` once
+        the transition is complete and all context
+        promises (if any) have been resolved.
+      */
+      _updateURL: function() {
+        if (!this.finished || this.numPromises !== 0 || !this.updateURLMethod || this.updatedURL) { return; }
+        var url = urlForObjects(this.router, this.handlerInfos, this.resolvedContexts, true);
+        this.updateURLMethod.call(this.router, url);
+        this.updatedURL = true;
+      },
+
+      /**
+        @private
+
+        This function steps through the transition process,
+        pausing along the way if promise contexts are 
+        encounter (and a loading state is available).
+
+        Takes an array of functions that, when called, yield
+        a `HandlerInfo` that'll be used to build up the final
+        array of `HandlerInfo`s to be passed to `setupContexts`.
+
+        If the context provided in a `HandlerInfo` is a promise
+        (i.e. has a method called `then`), and a 'loading' 
+        handler has been provided, this function will pause
+        until the promise is resolved. Otherwise, the function
+        will proceed with the transition even if the context
+        is a promise.
+      */
+      _step: function(index) {
+        if(index === this.handlerInfos.length) {
+          exitLoadingState(this.router);
+          setupContexts(this.router, this.handlerInfos);
+
+          this.finished = true;
+          this._updateURL();
+          return;
+        }
+
+        var self = this,
+            handlerInfo = this.handlerInfos[index],
+            context = handlerInfo.context(),
+            resolvedContextsIndex = this.resolvedContexts.length;
+
+        if (context && typeof context.then === 'function') {
+          if (handlerInfo.isDynamic && this.updateURLMethod) {
+            // We'll still need to update the URL at the end of this
+            // transition, after all contexts have resolved.
+
+            // Reserve a spot for this context. It will be replaced later.
+            // A leafier route's context may resolve before a parent context, 
+            // so we have to be careful to preserve the ordering.
+            this.numPromises++;
+            this.resolvedContexts[resolvedContextsIndex] = context;
+            context.then(function(value) {
+              self.numPromises--;
+              self.resolvedContexts[resolvedContextsIndex] = value;
+              self._updateURL();
+            });
+          }
+
+          if (enterLoadingState(this.router, handlerInfo.name)) {
+            // We've entered the loading state associated with this route, so
+            // set up a promise so we can leave the loading state once it's resolved.
+            // The chained `then` means that we can also catch errors that happen in `proceed`
+            context.then(proceed).then(null, function(error) {
+              enterFailureState(self.router, error);
+            });
+          } else {
+            // No loading state associated with this route, so continue
+            // transitioning without waiting for promise to resolve.
+            proceed(context);
+          }
+        } else {
+          if (handlerInfo.isDynamic && this.updateURLMethod) {
+            this.resolvedContexts[resolvedContextsIndex] = context;
+          }
+          proceed(context);
+        }
+
+        function proceed(value) {
+
+          // Leave the loading state? 
+
+          handlerInfo.context = value;
+
+          if (handlerInfo.isDynamic) { 
+            self.resolvedContexts.push(handlerInfo.context);
+          }
+
+          var handler = handlerInfo.handler;
+          if (handler.context !== handlerInfo.context) {
+            setContext(handler, handlerInfo.context);
+          }
+
+          self._step(index + 1);
+        }
+      }
+    };
 
 
     function Router() {
@@ -68,15 +181,52 @@ define("router",
         @return {Array} an Array of `[handler, parameter]` tuples
       */
       handleURL: function(url) {
-        var results = this.recognizer.recognize(url),
-            objects = [];
+        var results = this.recognizer.recognize(url);
 
-        if (!results) {
+        // URL-less routes should also not be recognized.
+        if (!results || this.getHandler(results[results.length - 1].handler).notAccessibleByURL) {
           throw new Error("No route matched the URL '" + url + "'");
         }
 
-        collectObjects(this, results, 0, []);
+        var handlerInfos = [], router = this;
+        for (var i = 0; i < results.length; i += 1) {
+          var result = results[i], name = result.handler, handler = router.getHandler(name);
+
+          handlerInfos.push({ 
+            isDynamic: result.isDynamic, 
+            handler: handler, 
+            name: name, 
+            context: getHandleURLContextResolver(handler, result.params)
+          });
+        }
+
+        if (!runTransitionHandlers(router, handlerInfos)) { return; }
+
+        var transition = new Transition(this, handlerInfos);
+        transition.start();
       },
+
+
+      /**
+        Configure whether `updateURL`/`replaceURL` should be called
+        immediately at the beginning of `transitionTo` or whether
+        it should wait until all promises are resolved. 
+
+        The default behavior (null) is optimistic;
+        it will try to change the URL right away, but if a URL
+        can't be serialized, it'll wait until all promises are
+        resolved and try again later. 
+
+        When set to true (aggressive), the URL is changed immediately,
+        and if a URL can't be serialized, an Error will be raised.
+
+        When set to false, the URL will only be changed at the
+        very end of a `transitionTo`, after all promises have
+        resolved.
+
+        @param {String} url a URL to update to
+      */
+      updateURLImmediately: null,
 
       /**
         Hook point for updating the URL.
@@ -107,8 +257,10 @@ define("router",
         @param {String} name the name of the route
       */
       transitionTo: function(name) {
-        var args = Array.prototype.slice.call(arguments, 1);
-        doTransition(this, name, this.updateURL, args);
+        var objects = Array.prototype.slice.call(arguments, 1),
+            transition = transitionTo(this, name, this.updateURL, objects);
+        if(!transition) { return; }
+        transition.start();
       },
 
       /**
@@ -120,8 +272,10 @@ define("router",
         @param {String} name the name of the route
       */
       replaceWith: function(name) {
-        var args = Array.prototype.slice.call(arguments, 1);
-        doTransition(this, name, this.replaceURL, args);
+        var objects = Array.prototype.slice.call(arguments, 1),
+            transition = transitionTo(this, name, this.replaceURL, objects);
+        if(!transition) { return; }
+        transition.start();
       },
 
       /**
@@ -134,9 +288,50 @@ define("router",
         @param {Array[Object]} contexts
         @return {Object} a serialized parameter hash
       */
-      paramsForHandler: function(handlerName, callback) {
-        var output = this._paramsForHandler(handlerName, [].slice.call(arguments, 1));
-        return output.params;
+      paramsForHandler: function(handlerName) {
+        var handlers = this.recognizer.handlersFor(handlerName),
+            objects = [].slice.call(arguments, 1),
+            params = {},
+            objectsToMatch = objects.length,
+            startIdx = handlers.length,
+            object, objectChanged, handlerObj, handler, names, i;
+
+        // Find out which handler to start matching at
+        for (i=handlers.length-1; i>=0 && objectsToMatch>0; i--) {
+          if (handlers[i].names.length) {
+            objectsToMatch--;
+            startIdx = i;
+          }
+        }
+
+        if (objectsToMatch > 0) {
+          throw "More objects were passed than dynamic segments";
+        }
+
+        // Connect the objects to the routes
+        for (i=0; i<handlers.length; i++) {
+          handlerObj = handlers[i];
+          handler = this.getHandler(handlerObj.handler);
+          names = handlerObj.names;
+
+          // If it's a dynamic segment
+          if (handlerObj.names.length) {
+            // If we have objects, use them
+            if (i >= startIdx) {
+              object = objects.shift();
+            // Otherwise use existing context
+            } else {
+              object = handler.context;
+            }
+
+            // Serialize to generate params
+            if (handler.serialize) {
+              merge(params, handler.serialize(object, handlerObj.names));
+            }
+          } 
+        }
+
+        return params;
       },
 
       /**
@@ -152,86 +347,6 @@ define("router",
       generate: function(handlerName) {
         var params = this.paramsForHandler.apply(this, arguments);
         return this.recognizer.generate(handlerName, params);
-      },
-
-      /**
-        @private
-
-        Used internally by `generate` and `transitionTo`.
-      */
-      _paramsForHandler: function(handlerName, objects, doUpdate) {
-        var handlers = this.recognizer.handlersFor(handlerName),
-            params = {},
-            toSetup = [],
-            startIdx = handlers.length,
-            objectsToMatch = objects.length,
-            object, objectChanged, handlerObj, handler, names, i, len;
-
-        // Find out which handler to start matching at
-        for (i=handlers.length-1; i>=0 && objectsToMatch>0; i--) {
-          if (handlers[i].names.length) {
-            objectsToMatch--;
-            startIdx = i;
-          }
-        }
-
-        if (objectsToMatch > 0) {
-          throw "More objects were passed than dynamic segments";
-        }
-
-        // Connect the objects to the routes
-        for (i=0, len=handlers.length; i<len; i++) {
-          handlerObj = handlers[i];
-          handler = this.getHandler(handlerObj.handler);
-          names = handlerObj.names;
-          objectChanged = false;
-
-          // If it's a dynamic segment
-          if (names.length) {
-            // If we have objects, use them
-            if (i >= startIdx) {
-              object = objects.shift();
-              objectChanged = true;
-            // Otherwise use existing context
-            } else {
-              object = handler.context;
-            }
-
-            // Serialize to generate params
-            if (handler.serialize) {
-              merge(params, handler.serialize(object, names));
-            }
-          // If it's not a dynamic segment and we're updating
-          } else if (doUpdate) {
-            // If we've passed the match point we need to deserialize again
-            // or if we never had a context
-            if (i > startIdx || !handler.hasOwnProperty('context')) {
-              if (handler.deserialize) {
-                object = handler.deserialize({});
-                objectChanged = true;
-              }
-            // Otherwise use existing context
-            } else {
-              object = handler.context;
-            }
-          }
-
-          // Make sure that we update the context here so it's available to
-          // subsequent deserialize calls
-          if (doUpdate && objectChanged) {
-            // TODO: It's a bit awkward to set the context twice, see if we can DRY things up
-            setContext(handler, object);
-          }
-
-          toSetup.push({
-            isDynamic: !!handlerObj.names.length,
-            handler: handlerObj.handler,
-            name: handlerObj.name,
-            context: object
-          });
-        }
-
-        return { params: params, toSetup: toSetup };
       },
 
       isActive: function(handlerName) {
@@ -284,17 +399,37 @@ define("router",
       handler.
 
       @param {Router} router
+      @return {Boolean} true if successfully loading state
     */
-    function loading(router) {
+    function enterLoadingState(router) {
+
+      // getHandler is what we should use for routeless substates.
+
+
+      // loading routes are routeless substates. you shouldn't
+      // be able to go to their URLs n shit.
+
+      // how about this: getHandler will find routeless states.
+      // and in ember the way you define them
+      //
+      // No, you need to be able to get all the handlerInfos using router.js
+      // ... or do you?
+
+      // if I say linkTo things.foo.routeless, then getHandler...
+      // forget that:
+      // {{action transitionToRoute 'name.of.urllessstate' ctx}}
+      // ultimately this gets looked up on route recognizer.
+      // so we should provide it a fake name. 
+
+      var handler = router.getHandler('loading');
+      if(!handler) { return false; }
+
       if (!router.isLoading) {
         router.isLoading = true;
-        var handler = router.getHandler('loading');
-
-        if (handler) {
-          if (handler.enter) { handler.enter(); }
-          if (handler.setup) { handler.setup(); }
-        }
+        if (handler.enter) { handler.enter(); }
+        if (handler.setup) { handler.setup(); }
       }
+      return true;
     }
 
     /**
@@ -307,7 +442,7 @@ define("router",
 
       @param {Router} router
     */
-    function loaded(router) {
+    function exitLoadingState(router) {
       router.isLoading = false;
       var handler = router.getHandler('loading');
       if (handler && handler.exit) { handler.exit(); }
@@ -319,9 +454,8 @@ define("router",
       This function is called if any encountered promise
       is rejected.
 
-      It triggers the `exit` method on the `loading` handler,
-      the `enter` method on the `failure` handler, and the
-      `setup` method on the `failure` handler with the
+      It triggers the `exit` method on the `loading` handler
+      and the `setup` method on the `failure` handler with the
       `error`.
 
       @param {Router} router
@@ -329,83 +463,114 @@ define("router",
         rejection, to pass into the failure handler's
         `setup` method.
     */
-    function failure(router, error) {
-      loaded(router);
+    function enterFailureState(router, error) {
+      exitLoadingState(router);
       var handler = router.getHandler('failure');
+      if (handler && handler.enter) { handler.enter(error); }
       if (handler && handler.setup) { handler.setup(error); }
     }
 
     /**
       @private
     */
-    function doTransition(router, name, method, args) {
-      var output = router._paramsForHandler(name, args, true);
-      var params = output.params, toSetup = output.toSetup;
+    function transitionTo(router, name, updateURLMethod, objects) {
 
-      var url = router.recognizer.generate(name, params);
-      method.call(router, url);
+      var handlers = router.recognizer.handlersFor(name),
+          startIdx = handlers.length,
+          objectsToMatch = objects.length,
+          i, len;
 
-      setupContexts(router, toSetup);
-    }
-
-    /**
-      @private
-
-      This function is called after a URL change has been handled
-      by `router.handleURL`.
-
-      Takes an Array of `RecognizedHandler`s, and converts the raw
-      params hashes into deserialized objects by calling deserialize
-      on the handlers. This process builds up an Array of
-      `HandlerInfo`s. It then calls `setupContexts` with the Array.
-
-      If the `deserialize` method on a handler returns a promise
-      (i.e. has a method called `then`), this function will pause
-      building up the `HandlerInfo` Array until the promise is
-      resolved. It will use the resolved value as the context of
-      `HandlerInfo`.
-    */
-    function collectObjects(router, results, index, objects) {
-      if (results.length === index) {
-        loaded(router);
-        setupContexts(router, objects);
-        return;
-      }
-
-      var result = results[index];
-      var handler = router.getHandler(result.handler);
-      var object = handler.deserialize && handler.deserialize(result.params);
-
-      if (object && typeof object.then === 'function') {
-        loading(router);
-
-        // The chained `then` means that we can also catch errors that happen in `proceed`
-        object.then(proceed).then(null, function(error) {
-          failure(router, error);
-        });
-      } else {
-        proceed(object);
-      }
-
-      function proceed(value) {
-        if (handler.context !== object) {
-          setContext(handler, object);
+      // Find out which handler to start matching at
+      for (i=handlers.length-1; i>=0 && objectsToMatch>0; i--) {
+        if (handlers[i].names.length) {
+          objectsToMatch--;
+          startIdx = i;
         }
-
-        var updatedObjects = objects.concat([{
-          context: value,
-          handler: result.handler,
-          isDynamic: result.isDynamic
-        }]);
-        collectObjects(router, results, index + 1, updatedObjects);
       }
+
+      if (objectsToMatch > 0) {
+        throw "More objects were passed than dynamic segments";
+      }
+
+      var handlerInfos = [];
+      for (i=0, len=handlers.length; i<len; i++) {
+        var handlerObj = handlers[i],
+            handlerName = handlerObj.handler,
+            handler = router.getHandler(handlerName),
+            isDynamic = !!handlerObj.names.length;
+
+        handlerInfos.push({ 
+          isDynamic: isDynamic, 
+          handler: handler, 
+          name: handlerName, 
+          context: getTransitionToContextResolver(isDynamic, i, startIdx, objects, handler)
+        });
+      }
+
+      if (!runTransitionHandlers(router, handlerInfos)) { return; }
+
+      if (handlerInfos[handlerInfos.length - 1].handler.notAccessibleByURL) {
+        // This is a URL-less transition, so don't attempt to change the URL.
+        updateURLMethod = null;
+      }
+
+      if (updateURLMethod && router.updateURLImmediately !== false) {
+        // Attempt to generate the new URL immediately.
+        var url = urlForObjects(router, handlerInfos, objects, router.updateURLImmediately === true);
+        if(url) {
+          // Perform the URL change and prevent the Transition from doing it later.
+          updateURLMethod.call(router, url);
+          updateURLMethod = null;
+        }
+      }
+
+      return new Transition(router, handlerInfos, updateURLMethod);
+    }
+
+
+    /**
+      @private
+ 
+      This function as called at the end of a 
+      `transitionTo` transition to perform the update to the 
+      URL. This function will fail and return false if 
+      a valid URL cannot be serialized by the context
+      objects provided, which can happen if `serialize`
+      is called with a promise which doesn't have enough
+      information on it to generate a URL param. 
+
+      This function is used twice: once at the beginning
+      of a `transitionTo` to immediately attempt a URL
+      change
+
+    */
+    function urlForObjects(router, handlerInfos, objects, errorOnFailure) {
+      var lastHandlerName = handlerInfos[handlerInfos.length - 1].name,
+          params = router.paramsForHandler.apply(router, [lastHandlerName].concat(objects));
+
+      // Validate that the paramsForHandler did return invalid parameters, e.g.
+      // parameters with null/undefined values.
+      for (var key in params) {
+        if (!params.hasOwnProperty(key)) { continue; }
+
+        var value = params[key];
+        if (typeof value === "undefined" || value === null) {
+          if (errorOnFailure) {
+            throw new Error("Could not generate URL. Check that your serialize functions aren't populating the params hash with undefined/null values.");
+          } else {
+            return null;
+          }
+        }
+      }
+      return router.recognizer.generate(lastHandlerName, params);
     }
 
     /**
       @private
 
-      Takes an Array of `UnresolvedHandlerInfo`s, resolves the handler names
-      into handlers, and then figures out what to do with each of the handlers.
+      Takes an Array of `HandlerInfo`s, figures out which ones are
+      exiting, entering, or changing contexts, and calls the
+      proper handler hooks.
 
       For example, consider the following tree of handlers. Each handler is
       followed by the URL segment it handles.
@@ -439,11 +604,9 @@ define("router",
          4. Triggers the `setup` callback on `about`
 
       @param {Router} router
-      @param {Array[UnresolvedHandlerInfo]} handlerInfos
+      @param {Array[HandlerInfo]} handlerInfos
     */
     function setupContexts(router, handlerInfos) {
-      resolveHandlers(router, handlerInfos);
-
       var partition =
         partitionHandlers(router.currentHandlerInfos || [], handlerInfos);
 
@@ -463,7 +626,9 @@ define("router",
       eachHandler(partition.entered, function(handler, context) {
         if (aborted) { return; }
         if (handler.enter) { handler.enter(); }
+
         setContext(handler, context);
+
         if (handler.setup) {
           if (false === handler.setup(context)) {
             aborted = true;
@@ -471,6 +636,7 @@ define("router",
         }
       });
 
+      // Perform post-transition client hook.
       if (router.didTransition) {
         router.didTransition(handlerInfos);
       }
@@ -492,28 +658,6 @@ define("router",
             context = handlerInfo.context;
 
         callback(handler, context);
-      }
-    }
-
-    /**
-      @private
-
-      Updates the `handler` field in each element in an Array of
-      `UnresolvedHandlerInfo`s from a handler name to a resolved handler.
-
-      When done, the Array will contain `HandlerInfo` structures.
-
-      @param {Router} router
-      @param {Array[UnresolvedHandlerInfo]} handlerInfos
-    */
-    function resolveHandlers(router, handlerInfos) {
-      var handlerInfo;
-
-      for (var i=0, l=handlerInfos.length; i<l; i++) {
-        handlerInfo = handlerInfos[i];
-
-        handlerInfo.name = handlerInfo.handler;
-        handlerInfo.handler = router.getHandler(handlerInfo.handler);
       }
     }
 
@@ -615,5 +759,137 @@ define("router",
       handler.context = context;
       if (handler.contextDidChange) { handler.contextDidChange(); }
     }
+
+    /**
+      This is the transition event passed to transition handlers, used
+      for cancelling or redirecting an intended transition.
+    */
+    function TransitionEvent(router, handlerInfos) {
+      this.router = router;
+      this.handlerInfos = handlerInfos;
+      this.currentIndex = 0;
+    }
+
+    TransitionEvent.prototype = {
+      transitionTo: function() {
+        this.preventTransition();
+        this.router.transitionTo.apply(this.router, arguments);
+      },
+      preventTransition: function() {
+        this.transitionCancelled = true;
+      },
+      getContext: function() {
+        if(this.isDestinationRoute) {
+          return this.handlerInfos[this.currentIndex].context();
+        } else {
+          throw new Error("getContext() cannot be called when transitioning out of a route.");
+        }
+      }
+    };
+
+    function runTransitionHandlers(router, destHandlerInfos) {
+      var transitionEvent = new TransitionEvent(router, destHandlerInfos),
+          sourceHandlerInfos = router.currentHandlerInfos, i;
+
+      // sourceHandlerInfos won't exist for very first transition.
+      if(sourceHandlerInfos) {
+        for (i = sourceHandlerInfos.length - 1; i >= 0; i--) {
+          processTransitionRules(true, sourceHandlerInfos[i], sourceHandlerInfos, destHandlerInfos, transitionEvent);
+        }
+      }
+
+      if (transitionEvent.transitionCancelled) { return false; }
+      transitionEvent.isDestinationRoute = true;
+
+      for (i = 0; i < destHandlerInfos.length; i++) {
+        // TODO: double check it should iterate left-to-right
+
+        // Update the current context index on the transitionEvent
+        // so that getContext() will return the correct one. 
+        transitionEvent.currentIndex = i;
+        processTransitionRules(false, destHandlerInfos[i], sourceHandlerInfos, destHandlerInfos, transitionEvent);
+      }
+
+      return !transitionEvent.transitionCancelled;
+    }
+
+    function processTransitionRules(checkingSourceRoutes, handlerInfo, sourceHandlerInfos, destHandlerInfos, transitionEvent) {
+      var handler = handlerInfo.handler, transitions = handler.transitions;
+      if(!transitions) { return; }
+
+      for (var transitionRule in transitions) {
+        if (!transitions.hasOwnProperty(transitionRule)) { continue; }
+
+        var split = transitionRule.split(' '), fromTo = split[0], routeName = split[1], 
+            runHandler = null, handlerInfosToCheck = null;
+    
+        if (fromTo === 'to') {
+          if (checkingSourceRoutes) {
+            if (routeName === '*' && sourceHandlerInfos) {
+              runHandler = !checkHandlerMembership(handlerInfo.name, destHandlerInfos);
+            } else {
+              runHandler = checkHandlerMembership(routeName, destHandlerInfos);
+            }
+          }
+        } else if (fromTo === 'from') {
+          if (!checkingSourceRoutes) {
+            if (routeName === '*') {
+              runHandler = !checkHandlerMembership(handlerInfo.name, sourceHandlerInfos);
+            } else if (sourceHandlerInfos) {
+              runHandler = checkHandlerMembership(routeName, sourceHandlerInfos);
+            }
+          }
+        } else {
+          throw new Error("Badly formed transition handler key (expected 'to' or 'from'): " + transitionRule);
+        }
+
+        if (runHandler) {
+          var transitionHandler = transitions[transitionRule];
+          transitionHandler.call(handler, transitionEvent);
+
+          if(transitionEvent.transitionCancelled) { return; }
+        }
+      }
+    }
+
+    function checkHandlerMembership(routeName, handlerInfos) {
+      for (var i = 0; i < handlerInfos.length; i += 1) {
+        if(handlerInfos[i].name === routeName) { return true; }
+      }
+      return false;
+    }
+
+    function getHandleURLContextResolver(handler, params) {
+      var cachedContext;
+      return function() {
+        if(cachedContext) { return cachedContext; }
+        return cachedContext = handler.deserialize && handler.deserialize(params);
+      };
+    }
+
+    function getTransitionToContextResolver(isDynamic, index, startIndex, objects, handler) {
+      var cachedContext;
+      return function() {
+        if(cachedContext) { return cachedContext; }
+
+        var object;
+        if (isDynamic) {
+          object = index >= startIndex ? objects.shift() : handler.context;
+        } else {
+          // If we've passed the match point we need to deserialize again
+          // or if we never had a context
+          if (index > startIndex || !handler.hasOwnProperty('context')) {
+            if (handler.deserialize) {
+              object = handler.deserialize({});
+            }
+          // Otherwise use existing context
+          } else {
+            object = handler.context;
+          }
+        }
+        return cachedContext = object;
+      };
+    }
+
     return Router;
   });

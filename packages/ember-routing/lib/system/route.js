@@ -55,6 +55,27 @@ Ember.Route = Ember.Object.extend({
   events: null,
 
   /**
+    The collection of transition event handlers that can be used to
+    override, prevent, or redirect an attempted transition.
+
+    The keys this hash should refer to a target route name, e.g. 'posts.new'.
+    Any transitions to the named target route or its children will cause
+    the provided event handler to run.
+
+    The context of event will be the this route.
+
+    @see {Ember.Route#send}
+    @see {Handlebars.helpers.action}
+
+    @property events
+    @type Hash
+    @default null
+  */
+  transitions: null,
+
+  notAccessibleByURL: false,
+
+  /**
     This hook is executed when the router completely exits this route. It is
     not executed when the model for the route changes.
 
@@ -122,6 +143,17 @@ Ember.Route = Ember.Object.extend({
     if (controller) {
       this.controller = controller;
       set(controller, 'model', context);
+
+      // Check if context is a promise. The controller's isLoaded
+      // property depends on _waitingForPromise.
+      if(context && context.then && typeof context.then === 'function') {
+        set(controller, '_waitingForPromise', true);
+        context.then(function() {
+          set(controller, '_waitingForPromise', false);
+        });
+      } else {
+        set(controller, '_waitingForPromise', false);
+      }
     }
 
     if (this.setupControllers) {
@@ -159,8 +191,7 @@ Ember.Route = Ember.Object.extend({
     @method deserialize
   */
   deserialize: function(params) {
-    var model = this.model(params);
-    return this.currentModel = model;
+    return this.model(params);
   },
 
   /**
