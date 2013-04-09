@@ -518,6 +518,8 @@ test("The Special page returning an error puts the app into the failure state", 
     return menuItem;
   };
 
+  // TODO Failure states for transitionTo's.
+
   App.SpecialRoute = Ember.Route.extend({
     setup: function() {
       throw 'Setup error';
@@ -1602,4 +1604,26 @@ test("Application template does not duplicate when re-rendered", function() {
   });
 
   equal(Ember.$('h3:contains(I Render Once)').size(), 1);
+});
+
+test("ApplicationRoute gets a default routeTo function injected in its event hash", function() {
+  bootApplication();
+  var appRoute = container.lookup('route:application');
+  ok(appRoute.events.routeTo instanceof Function, "ApplicationRoute's events hash has a routeTo handler in it.");
+});
+
+test("routeTo gets invoked for URL changes.", function() {
+
+  var lastRouteName;
+  App.ApplicationRoute = Ember.Route.extend({
+    events: {
+      routeTo: function(routeName) {
+        lastRouteName = routeName;
+      }
+    }
+  });
+
+  bootApplication();
+
+  equal(lastRouteName, "index", "App boot navigation fired routeTo");
 });

@@ -68,14 +68,17 @@ define("router",
         @return {Array} an Array of `[handler, parameter]` tuples
       */
       handleURL: function(url) {
-        var results = this.recognizer.recognize(url),
-            objects = [];
+        collectObjects(this, this.getHandlerInfosForURL(url), 0, []);
+      },
 
-        if (!results) {
-          throw new Error("No route matched the URL '" + url + "'");
+      getHandlerInfosForURL: function(url) {
+        var results = this.recognizer.recognize(url);
+
+        if (!results) { 
+          throw new Error("No route matched the URL '" + url + "'"); 
         }
 
-        collectObjects(this, results, 0, []);
+        return results;
       },
 
       /**

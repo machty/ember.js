@@ -84,8 +84,30 @@ Ember.Router = Ember.Object.extend({
   },
 
   handleURL: function(url) {
-    this.router.handleURL(url);
-    this.notifyPropertyChange('url');
+    var handlerInfos = this.router.getHandlerInfosForURL(url),
+        resolvers = [],
+        routePathArgs = [],
+        route;
+
+    // Construct list of context resolvers for dynamic routes that
+    // will be passed to the `routeTo` event.
+    for (var i = 0, len = handlerInfos.length; i < len; i += 1) {
+      var handlerInfo = handlerInfos[i];
+      routePathArgs.push({ name: handlerInfo.handler });
+      route = this.router.getHandler(handlerInfo.handler);
+      if (handlerInfo.isDynamic) {
+        resolvers.push(getContextResolver(route, handlerInfo.params));
+      }
+    }
+
+    if (this.router.currentHandlerInfos) {
+      this.send.apply(this, ['routeTo', route.routeName].concat(resolvers));
+    } else {
+      // No active routes exists yet (app hasn't initialized), so materialize
+      // the application route and directly call its routeTo.
+      var applicationRoute = this.router.getHandler('application');
+      applicationRoute.events.routeTo.apply(applicationRoute, [route.routeName].concat(resolvers));
+    }
   },
 
   transitionTo: function(name) {
@@ -168,9 +190,31 @@ function getHandlerFunction(router) {
       handler = container.lookup(routeName);
     }
 
+    if (name === 'application') {
+      // Inject default `routeTo` function.
+      handler.events = handler.events || {};
+      handler.events.routeTo = handler.events.routeTo || defaultRouteTo;
+    }
+
     handler.routeName = name;
     return handler;
   };
+}
+
+function defaultRouteTo(routeName) {
+  var args = [routeName],
+      contextResolvers = Array.prototype.slice.call(arguments, 1), 
+      i, len, contextResolver;
+
+  for (i = 0, len = contextResolvers.length; i < len; i += 1) {
+    contextResolver = contextResolvers[i];
+    if (contextResolver instanceof Function && contextResolver._isContextResolver) {
+      args.push(contextResolver());
+    } else {
+      args.push(contextResolver);
+    }
+  }
+  this.transitionTo.apply(this, args);
 }
 
 function routePath(handlerInfos) {
@@ -229,6 +273,19 @@ function doTransition(router, method, args) {
 
   router.router[method].apply(router.router, args);
   router.notifyPropertyChange('url');
+}
+
+function getContextResolver(route, params) {
+  var contextIsCached = false, cachedContext, resolver;
+
+  resolver = function() {
+    if (contextIsCached) { return cachedContext; }
+
+    contextIsCached = true;
+    return cachedContext = route.deserialize && route.deserialize(params);
+  };
+  resolver._isContextResolver = true;
+  return resolver;
 }
 
 Ember.Router.reopenClass({
