@@ -103,8 +103,8 @@ Ember.Router = Ember.Object.extend({
     if (this.router.currentHandlerInfos) {
       this.send.apply(this, ['routeTo', route.routeName].concat(resolvers));
     } else {
-      // No active routes exists yet (app hasn't initialized), so materialize
-      // the application route and directly call its routeTo.
+      // No active routes exists yet (this is the first route transition), 
+      // so materialize the application route and directly call its routeTo.
       var applicationRoute = this.router.getHandler('application');
       applicationRoute.events.routeTo.apply(applicationRoute, [route.routeName].concat(resolvers));
     }
