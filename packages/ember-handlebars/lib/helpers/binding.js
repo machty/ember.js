@@ -148,6 +148,17 @@ function simpleBind(currentContext, property, options) {
   }
 }
 
+function shouldDisplayIfHelperContent(result) {
+  var truthy = result && get(result, 'isTruthy');
+  if (typeof truthy === 'boolean') { return truthy; }
+
+  if (Ember.isArray(result)) {
+    return get(result, 'length') !== 0;
+  } else {
+    return !!result;
+  }
+}
+
 /**
   @private
 
@@ -255,19 +266,11 @@ EmberHandlebars.registerHelper('bind', function(property, options) {
 */
 EmberHandlebars.registerHelper('boundIf', function(property, fn) {
   var context = (fn.contexts && fn.contexts.length) ? fn.contexts[0] : this;
-  var func = function(result) {
-    var truthy = result && get(result, 'isTruthy');
-    if (typeof truthy === 'boolean') { return truthy; }
-
-    if (Ember.isArray(result)) {
-      return get(result, 'length') !== 0;
-    } else {
-      return !!result;
-    }
-  };
+  var func = shouldDisplayIfHelperContent;
 
   return bind.call(context, property, fn, true, func, func, ['isTruthy', 'length']);
 });
+
 
 /**
   @private
@@ -296,18 +299,10 @@ EmberHandlebars.registerHelper('unboundIf', function(property, fn) {
   normalized = normalizePath(context, property, data);
   propertyValue = handlebarsGet(context, property, fn);
 
-  var truthy = propertyValue && get(propertyValue, 'isTruthy');
-  if (typeof truthy === 'boolean') {
-    result = truthy;
-  } else if (Ember.isArray(propertyValue)) {
-    result = get(propertyValue, 'length') !== 0;
-  } else {
-    result = !!propertyValue;
-  }
-
-  if (!result) {
+  if (!shouldDisplayIfHelperContent(propertyValue)) {
     template = inverse;
   }
+
   template(context, { data: data });
 });
 
