@@ -266,9 +266,8 @@ EmberHandlebars.registerHelper('bind', function(property, options) {
 */
 EmberHandlebars.registerHelper('boundIf', function(property, fn) {
   var context = (fn.contexts && fn.contexts.length) ? fn.contexts[0] : this;
-  var func = shouldDisplayIfHelperContent;
 
-  return bind.call(context, property, fn, true, func, func, ['isTruthy', 'length']);
+  return bind.call(context, property, fn, true, shouldDisplayIfHelperContent, shouldDisplayIfHelperContent, ['isTruthy', 'length']);
 });
 
 
