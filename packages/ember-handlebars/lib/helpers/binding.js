@@ -270,6 +270,48 @@ EmberHandlebars.registerHelper('boundIf', function(property, fn) {
 });
 
 /**
+  @private
+
+  Use the `unboundIf` helper to create a conditional that evaluates once.
+
+  ```handlebars
+  {{#unboundIf "content.shouldDisplayTitle"}}
+    {{content.title}}
+  {{/unboundIf}}
+  ```
+
+  @method unboundIf
+  @for Ember.Handlebars.helpers
+  @param {String} property Property to bind
+  @param {Function} fn Context to provide for rendering
+  @return {String} HTML string
+*/
+EmberHandlebars.registerHelper('unboundIf', function(property, fn) {
+  var context = (fn.contexts && fn.contexts.length) ? fn.contexts[0] : this,
+      data = fn.data,
+      template = fn.fn,
+      inverse = fn.inverse,
+      normalized, propertyValue, result;
+
+  normalized = normalizePath(context, property, data);
+  propertyValue = handlebarsGet(context, property, fn);
+
+  var truthy = propertyValue && get(propertyValue, 'isTruthy');
+  if (typeof truthy === 'boolean') {
+    result = truthy;
+  } else if (Ember.isArray(propertyValue)) {
+    result = get(propertyValue, 'length') !== 0;
+  } else {
+    result = !!propertyValue;
+  }
+
+  if (!result) {
+    template = inverse;
+  }
+  template(context, { data: data });
+});
+
+/**
   @method with
   @for Ember.Handlebars.helpers
   @param {Function} context
@@ -319,6 +361,7 @@ EmberHandlebars.registerHelper('with', function(context, options) {
 
 /**
   See [boundIf](/api/classes/Ember.Handlebars.helpers.html#method_boundIf)
+  and [unboundIf](/api/classes/Ember.Handlebars.helpers.html#method_unboundIf)
 
   @method if
   @for Ember.Handlebars.helpers
@@ -329,8 +372,11 @@ EmberHandlebars.registerHelper('with', function(context, options) {
 EmberHandlebars.registerHelper('if', function(context, options) {
   Ember.assert("You must pass exactly one argument to the if helper", arguments.length === 2);
   Ember.assert("You must pass a block to the if helper", options.fn && options.fn !== Handlebars.VM.noop);
-
-  return helpers.boundIf.call(options.contexts[0], context, options);
+  if (options.data.isUnbound) {
+    return helpers.unboundIf.call(options.contexts[0], context, options);
+  } else {
+    return helpers.boundIf.call(options.contexts[0], context, options);
+  }
 });
 
 /**
@@ -349,7 +395,11 @@ EmberHandlebars.registerHelper('unless', function(context, options) {
   options.fn = inverse;
   options.inverse = fn;
 
-  return helpers.boundIf.call(options.contexts[0], context, options);
+  if (options.data.isUnbound) {
+    return helpers.unboundIf.call(options.contexts[0], context, options);
+  } else {
+    return helpers.boundIf.call(options.contexts[0], context, options);
+  }
 });
 
 /**
