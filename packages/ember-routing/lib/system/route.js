@@ -21,6 +21,9 @@ import EmberObject from "ember-runtime/system/object";
 import Evented from "ember-runtime/mixins/evented";
 import ActionHandler from "ember-runtime/mixins/action_handler";
 import generateController from "ember-routing/system/generate_controller";
+import {
+  generateControllerFactory
+} from "ember-routing/system/generate_controller";
 import { stashParamNames } from "ember-routing/utils";
 
 var slice = Array.prototype.slice;
@@ -94,10 +97,27 @@ var Route = EmberObject.extend(ActionHandler, Evented, {
   _qp: computed(function() {
     var controllerName = this.controllerName || this.routeName;
     var controllerClass = this.container.lookupFactory(`controller:${controllerName}`);
+    var queryParameterConfiguraton = this.queryParams;
 
     if (!controllerClass) {
-      return defaultQPMeta;
+      if (!queryParameterConfiguraton || !queryParamsObjectRepresentsRouterBasedConfigurationOfQueryParams(queryParameterConfiguraton)) {
+        return defaultQPMeta;
+      } else {
+        var queryParamsConfigCopiedToGeneratedController = {
+          queryParams: queryParameterConfiguraton
+        };
+
+        // add properties with defualt values to the controller class
+        for (var configurationOption in queryParameterConfiguraton) {
+          if (queryParameterConfiguraton.hasOwnProperty(configurationOption)) {
+            queryParamsConfigCopiedToGeneratedController[configurationOption] = queryParameterConfiguraton[configurationOption].defaultValue;
+          }
+        }
+
+        controllerClass = generateControllerFactory(this.container, controllerName, null, queryParamsConfigCopiedToGeneratedController);
+      }
     }
+
 
     var controllerProto = controllerClass.proto();
     var qpProps = get(controllerProto, '_normalizedQueryParams');
@@ -1089,12 +1109,14 @@ var Route = EmberObject.extend(ActionHandler, Evented, {
       Ember.deprecate("Ember.Route.setupControllers is deprecated. Please use Ember.Route.setupController(controller, model) instead.");
       this.setupControllers(controller, context);
     } else {
+
       var states = get(this, '_qp.states');
       if (transition) {
         // Update the model dep values used to calculate cache keys.
         stashParamNames(this.router, transition.state.handlerInfos);
         controller._updateCacheParams(transition.params);
       }
+
       controller._qpDelegate = states.allowOverrides;
 
       if (transition) {
@@ -1326,7 +1348,6 @@ var Route = EmberObject.extend(ActionHandler, Evented, {
   */
   model(params, transition) {
     var match, name, sawParams, value;
-
     var queryParams = get(this, '_qp.map');
 
     for (var prop in params) {
@@ -1443,7 +1464,7 @@ var Route = EmberObject.extend(ActionHandler, Evented, {
     in order to populate the URL.
 
     @method serialize
-    @param {Object} model the route's model
+    @param {Object} model the routes model
     @param {Array} params an Array of parameter names for the current
       route (in the example, `['post_id']`.
     @return {Object} the serialized parameters
@@ -2054,6 +2075,44 @@ function getQueryParamsFor(route, state) {
   }
 
   return params;
+}
+
+/*
+  In older versions of Ember.js query parameter configuration lived partly on
+  the controller and partly on the route:
+
+  ```controller.js
+  Controller.extend({
+    queryParams: ['page'],
+    page: 1
+  })
+  ```
+
+  ```route.js
+  Route.extend({
+    queryParams: {
+      page: {
+        refreshModel: true
+      }
+    }
+  })
+  ```
+
+  In current Ember.js, configuration on the controller has been deprecated and moved
+  to the route.
+
+  To support both styles during the transition we detect in the queryParams property of
+  a Route appears to be the older style where some configuration lived in the controller
+  or the current style where all configuration lives on the route.
+*/
+function queryParamsObjectRepresentsRouterBasedConfigurationOfQueryParams(params) {
+  for (var key in params) {
+    if (params[key].hasOwnProperty('as') || params[key].hasOwnProperty('defaultValue')) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function copyDefaultValue(value) {

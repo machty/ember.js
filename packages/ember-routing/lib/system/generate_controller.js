@@ -1,6 +1,7 @@
 import Ember from "ember-metal/core"; // Logger
 import { get } from "ember-metal/property_get";
 import { isArray } from "ember-runtime/utils";
+import merge from "ember-metal/merge";
 
 /**
 @module ember
@@ -23,8 +24,18 @@ import { isArray } from "ember-runtime/utils";
   @private
 */
 
-export function generateControllerFactory(container, controllerName, context) {
-  var Factory, fullName, factoryName, controllerType;
+export function generateControllerFactory(container, controllerName, context, defaultProperties) {
+  var Factory, fullName, factoryName, controllerType, generatedProperties;
+
+  generatedProperties = {
+    isGenerated: true,
+    toString() {
+      return `(generated ${controllerName} controller)`;
+    }
+  };
+
+  // todo, refactor to make sure defaultProperties is always passed
+  defaultProperties = defaultProperties || {};
 
   if (context && isArray(context)) {
     controllerType = 'array';
@@ -36,12 +47,7 @@ export function generateControllerFactory(container, controllerName, context) {
 
   factoryName = `controller:${controllerType}`;
 
-  Factory = container.lookupFactory(factoryName).extend({
-    isGenerated: true,
-    toString() {
-      return `(generated ${controllerName} controller)`;
-    }
-  });
+  Factory = container.lookupFactory(factoryName).extend(merge(defaultProperties, generatedProperties));
 
   fullName = `controller:${controllerName}`;
 
@@ -65,6 +71,7 @@ export function generateControllerFactory(container, controllerName, context) {
 */
 export default function generateController(container, controllerName, context) {
   generateControllerFactory(container, controllerName, context);
+
   var fullName = `controller:${controllerName}`;
   var instance = container.lookup(fullName);
 
