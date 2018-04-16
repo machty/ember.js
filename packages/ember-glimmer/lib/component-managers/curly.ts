@@ -211,6 +211,7 @@ export default class CurlyComponentManager extends AbstractManager<ComponentStat
     aliasIdToElementId(args, props);
 
     props.parentView = parentView;
+    props._scope = dynamicScope.outletState.value().scope;
     props[HAS_BLOCK] = hasBlock;
 
     props._targetObject = callerSelfRef.value();
