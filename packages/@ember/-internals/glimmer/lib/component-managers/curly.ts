@@ -269,6 +269,8 @@ export default class CurlyComponentManager
     // (`{{my-component}}`).
     props[HAS_BLOCK] = hasBlock;
 
+    props._scope = dynamicScope.outletState.value().scope;
+
     // Save the current `this` context of the template as the component's
     // `_target`, so bubbled actions are routed to the right place.
     props._target = valueForRef(callerSelfRef);
